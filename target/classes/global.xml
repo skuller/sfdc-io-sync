@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting" xmlns:email="http://www.mulesoft.org/schema/mule/email" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:spring="http://www.springframework.org/schema/beans" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:secure-property-placeholder="http://www.mulesoft.org/schema/mule/secure-property-placeholder"
+  xmlns:sfdc="http://www.mulesoft.org/schema/mule/sfdc" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/secure-property-placeholder http://www.mulesoft.org/schema/mule/secure-property-placeholder/current/mule-secure-property-placeholder.xsd
+http://www.mulesoft.org/schema/mule/sfdc http://www.mulesoft.org/schema/mule/sfdc/current/mule-sfdc.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd">
+
+  <secure-property-placeholder:config name="Secure_Property_Placeholderz" key="${key}" location="mule-app-${env}.properties" encryptionAlgorithm="Blowfish" doc:name="Secure Property Placeholder" />
+
+  <sfdc:config name="Salesforce" username="${sfdc-io-sync.sfdc.username}" password="${sfdc-io-sync.sfdc.password}"  url="${sfdc-io-sync.sfdc.url}" doc:name="Salesforce" disableSessionInvalidation="true" securityToken="${sfdc-io-sync.sfdc.token}"/>
+
+  <db:oracle-config name="Oracle_Configuration" host="${sfdc-io-sync.db.host}" port="${sfdc-io-sync.db.port}" instance="${sfdc-io-sync.db.instance}" user="${sfdc-io-sync.db.user}" password="${sfdc-io-sync.db.password}" doc:name="Oracle Configuration" />
+
+  <http:listener-config name="HTTP_Listener_Configuration" host="0.0.0.0" port="8193" doc:name="HTTP Listener Configuration" />
+
+  <spring:beans>
+    <spring:bean name="Secure_Property_Placeholderz" id="secure-property-placeholderz" class="com.twitter.mule.security.CustomSecurePropertyPlaceholderModule">
+      <spring:property name="encryptionAlgorithm" value="Blowfish" />
+      <spring:property name="encryptionMode" value="CBC" />
+      <spring:property name="keyFilePath" value="/etc/twkeys/mule/secure.properties" />
+      <spring:property name="location" value="mule-app-${env}.properties" />
+      <spring:property name="ignoreUnresolvablePlaceholders" value="true" />
+    </spring:bean>
+  </spring:beans>
+  <email:string-to-email-transformer mimeType="text/plain" name="String_to_Email" doc:name="String to Email" />
+
+</mule>

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns:sfdc="http://www.mulesoft.org/schema/mule/sfdc" xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:spring="http://www.springframework.org/schema/beans" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/sfdc http://www.mulesoft.org/schema/mule/sfdc/current/mule-sfdc.xsd
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd">
+
+  <batch:job name="sfdc-so-updates-Batch" max-failed-records="100000">
+    <batch:input>
+      <poll doc:name="Poll-SO">
+        <fixed-frequency-scheduler frequency="5" timeUnit="MINUTES" />
+        <watermark variable="waterMarkSO" default-expression="${sfdc.watermark.so.datetime}" selector="MAX" selector-expression="#[payload.Integration_Watermark__c]" />
+                <sfdc:query config-ref="Salesforce" query="${sfdc.so.query}" fetchSize="1000" doc:name="Salesforce - GetIOHeaders"/>
+      </poll>
+            <logger message="sfdc-so-updates-Batch #[payload.size()] from ${sfdc.so.query}" level="INFO" doc:name="Logger"/>
+    </batch:input>
+
+    <batch:process-records>
+      <batch:step name="Batch_Step:InitialProcess">
+                <logger message="#[payload.IO_Header__c + ', ' + payload.Integration_Watermark__c + ', ' + flowVars.waterMarkSO]" level="INFO" doc:name="Logger"/>
+                <dw:transform-message doc:name="Transform Message">
+                	<dw:input-payload mimeType="application/java" />
+                    <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+header:{  
+                      SFDC_HEADER_ID: payload.Id,
+                      SFDC_MESSAGE_ID: payload.Name[0..24],
+                      SFDC_OPTY_ID: payload.Id,
+                      SFDC_LOOKUP: payload.Parent_Lookup__c,
+                      ORDER_NUMBER: payload.IO_Header__c,
+                      PO_NUMBER: payload.Purchase_Order_Number__c,
+                      STATUS: "NEW",
+                      SMG_AGENCY_SPEND_FLAG: payload.Strategic_Agency_Partnership__c,
+                      COMMENTS: payload.Invoice_Instructions__c,
+                      ADDERESSEE: payload.Billing_Addressee__c,
+                      AGENCY_ID: payload.Agency_Name__r.ERP_Customer_Num__c,
+                      AGENCY_NAME: payload.Agency_Name__r.Name,
+                      AGENCY_OF_INFLUENCE_ID: payload.Agency_of_Influence__r.ERP_Customer_Num__c,
+                      AGENCY_OF_INFLUENCE: payload.Agency_of_Influence__r.Name,
+                      BILLING_CONTACT: payload.Finance_Contact__r.Name,
+                      TWITTER_ACCOUNT_MANAGER: payload.Account_Manager__r.Name
+                   }]]></dw:set-payload>
+                </dw:transform-message>
+                <batch:commit size="1000" doc:name="Batch Commit">
+                    <flow-ref name="insertSOHeaderRecords" doc:name="insertSOHeaderRecords"/>
+                </batch:commit>
+      </batch:step>
+    </batch:process-records>
+
+    <batch:on-complete>
+      <logger message="Completed Header Records #[payload.processedRecords] in time #[payload.elapsedTimeInMillis] ms. Watermark: #[flowVars.waterMarkSO]" level="INFO" doc:name="Logger" />
+    </batch:on-complete>
+    
+  </batch:job>
+
+
+  <flow name="insertSOHeaderRecords">
+    <db:insert config-ref="Oracle_Configuration" bulkMode="true" doc:name="DB:InsertIntoHeader">
+            <db:parameterized-query><![CDATA[INSERT INTO XXTW_OE_SO_UPDATES_HDR_STG(SFDC_HEADER_ID, SFDC_MESSAGE_ID, SFDC_OPTY_ID, SFDC_LOOKUP, ORDER_NUMBER, PO_NUMBER, STATUS, SMG_AGENCY_SPEND_FLAG, COMMENTS, ADDRESSEE, AGENCY_ID, AGENCY_NAME, AGENCY_OF_INFLUENCE_ID, AGENCY_OF_INFLUENCE, BILLING_CONTACT, TWITTER_ACCOUNT_MANAGER, CREATED_BY, CREATION_DATE, LAST_UPDATED_BY, LAST_UPDATE_DATE) 
+ VALUES(#[payload.header['SFDC_HEADER_ID']],
+        #[payload.header['SFDC_MESSAGE_ID']],
+        #[payload.header['SFDC_OPTY_ID']],
+        #[payload.header['SFDC_LOOKUP']],
+        #[payload.header['ORDER_NUMBER']],
+        #[payload.header['PO_NUMBER']],
+        #[payload.header['STATUS']],
+        #[payload.header['SMG_AGENCY_SPEND_FLAG']],
+        #[payload.header['COMMENTS']],
+        #[payload.header['ADDERESSEE']],
+        #[payload.header['AGENCY_ID']],
+        #[payload.header['AGENCY_NAME']],
+        #[payload.header['AGENCY_OF_INFLUENCE_ID']],
+        #[payload.header['AGENCY_OF_INFLUENCE']],
+        #[payload.header['BILLING_CONTACT']],
+        #[payload.header['TWITTER_ACCOUNT_MANAGER']],
+        '1392',
+        SYSDATE,
+        '1392',
+        SYSDATE)]]></db:parameterized-query>
+    </db:insert>
+    <catch-exception-strategy doc:name="catch-exception-strategy">
+      <set-payload value="#[String.format(&quot;Error inserting header with failure message: %s\n\nFailed Record:\n%s&quot;, exception.message.substring(0, exception.message.indexOf(&quot; Message&quot;)), payload)]" doc:name="Set Error Payload" />
+      <flow-ref name="send_error_email" doc:name="send_error_email" />
+    </catch-exception-strategy>
+  </flow>
+
+  <flow name="updateSOHeaderRecords">
+        <db:update config-ref="Oracle_Configuration" bulkMode="true" doc:name="DB:UpdateHeader">
+            <db:parameterized-query><![CDATA[UPDATE XXTW_OE_SO_UPDATES_HDR_STG
+          SET SFDC_HEADER_ID = #[payload.header['SFDC_HEADER_ID']],
+          SFDC_MESSAGE_ID = #[payload.header['SFDC_MESSAGE_ID']],
+          SFDC_OPTY_ID = #[payload.header['SFDC_OPTY_ID']],
+          SFDC_LOOKUP = #[payload.header['SFDC_LOOKUP']],
+          ORDER_NUMBER = #[payload.header['ORDER_NUMBER']],
+          PO_NUMBER = #[payload.header['PO_NUMBER']],
+          STATUS = #[payload.header['STATUS']],
+          SMG_AGENCY_SPEND_FLAG = #[payload.header['SMG_AGENCY_SPEND_FLAG']],
+          COMMENTS = #[payload.header['COMMENTS']],
+          ADDRESSEE = #[payload.header['ADDERESSEE']],
+          AGENCY_ID = #[payload.header['AGENCY_ID']],
+          AGENCY_NAME = #[payload.header['AGENCY_NAME']],
+          AGENCY_OF_INFLUENCE_ID = #[payload.header['AGENCY_OF_INFLUENCE_ID']],
+          AGENCY_OF_INFLUENCE = #[payload.header['AGENCY_OF_INFLUENCE']],
+          BILLING_CONTACT = #[payload.header['BILLING_CONTACT']],
+          TWITTER_ACCOUNT_MANAGER = #[payload.header['TWITTER_ACCOUNT_MANAGER']],
+          LAST_UPDATED_BY = '1392',
+          LAST_UPDATE_DATE = SYSDATE
+          WHERE ORDER_NUMBER = #[payload.header['ORDER_NUMBER']]]]></db:parameterized-query>
+        </db:update>
+    <catch-exception-strategy doc:name="catch-exception-strategy">
+      <set-payload value="#[String.format(&quot;Error updating header with failure message: %s\n\nFailed Record:\n%s&quot;, exception.message.substring(0, exception.message.indexOf(&quot; Message&quot;)), payload)]" doc:name="Set Error Payload" />
+      <flow-ref name="send_error_email" doc:name="send_error_email" />
+    </catch-exception-strategy>
+  </flow>
+</mule>

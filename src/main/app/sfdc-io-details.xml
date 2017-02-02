@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:sfdc="http://www.mulesoft.org/schema/mule/sfdc"
+	xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:spring="http://www.springframework.org/schema/beans" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.mulesoft.org/schema/mule/sfdc http://www.mulesoft.org/schema/mule/sfdc/current/mule-sfdc.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd">
+
+  <flow name="sfdc-io-detailsFlow">
+    <flow-ref name="querySalesforceIODetails" doc:name="querySalesforceIODetails" />
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+          %output application/java
+          %function formatDate(sfDate)  ((sfDate splitBy "T") joinBy " ") as :localdatetime {format:"yyyy-MM-dd HH:mm:ss.SSS'Z'"} as :string {format:"yyyy-MM-dd HH:mm:ss"}
+          ---
+          (payload filter ($ != null and (sizeOf ($)) > 0) map {
+            details: {
+              IO_DETAILS: $.io_details__c,
+              OP_MODE: "ACCEPT",
+              STATUS_FLAG: "PROCESSED",
+              QUEUE_TYPE: "New Order",
+              PLATFORM: $.Platform__c,
+              PRODUCT: $.Product_Detail__c,
+              TOTAL_NUMBER_OF_POSTS: $.Total_Number_of_Posts__c,
+              ORDER_NUMBER: recordVars['ORDER_NUMBER'],
+              (CREATION_DATE: formatDate($.CreatedDate)) when $.CreatedDate != null,
+              CREATED_BY: $.CreatedById,
+              (LAST_UPDATE_DATE: formatDate($.LastModifiedDate)) when $.LastModifiedDate != null,
+              LAST_UPDATED_BY: $.LastModifiedById,
+              ORIGINATING_ID: $.Id
+              
+            },
+            originatingIds: $.Id
+          })]]></dw:set-payload>
+        </dw:transform-message>
+    <expression-filter expression="#[payload != null &amp;&amp; payload.size() &gt; 0]" doc:name="payload != null ?" />
+    <flow-ref name="checkExistingIODetails" doc:name="checkExistingIODetails" />
+    <batch:execute name="sfdc-io-detail-syncBatch" doc:name="sfdc-io-detail-syncBatch" />
+    <logger message="Product Details: #[payload]" level="INFO" doc:name="Logger" />
+  </flow>
+  
+    <flow name="querySalesforceIODetails">
+    <sfdc:query config-ref="Salesforce" query="dsql:SELECT CreatedDate,Id,LastModifiedDate,Name,Platform__c,Product_Detail__c,Related_IO__c,Total_Number_of_Posts__c FROM IO_Detail__c WHERE Related_IO__c = '#[payload['IO_ID']]'" doc:name="Salesforce:queryIODetail" fetchSize="1000" />
+    <logger message="io details #[payload]" level="INFO" doc:name="Logger" />
+    <catch-exception-strategy doc:name="default-catch-exception-strategy">
+      <set-payload value="#[String.format(&quot;Error querying Salesforce with failure message: %s\n\nFailed Record:\n%s&quot;, exception.message.substring(0, exception.message.indexOf(&quot; Message&quot;)), payload)]" doc:name="Set Error Payload" />
+      <flow-ref name="send_error_email" doc:name="send_error_email" />
+    </catch-exception-strategy>
+  </flow>
+  
+  <batch:job name="sfdc-io-detail-syncBatch">
+    <batch:process-records>
+      <batch:step name="Batch_Step:EvaluateIODetail">
+        <expression-component doc:name="checkIODetailExists?"><![CDATA[recordVars['detailExists'] = false;
+            for (java.util.HashMap detailResultMap: flowVars['detailResults']) {
+              if (detailResultMap['ORIGINATING_ID'].equalsIgnoreCase(payload.details['ORIGINATING_ID'])) {
+                recordVars['detailExists'] = true;
+        return;
+              }
+            }]]></expression-component>
+      </batch:step>
+      <batch:step name="Batch_Step:InsertIODetails" accept-expression="#[!recordVars['detailExists']]">
+        <logger message="#[payload['ORIGINATING_ID']]" level="INFO" doc:name="logOriginatingID" />
+        <batch:commit size="1000" doc:name="Batch Commit">
+          <flow-ref name="insertIODetails" doc:name="insertIODetails" />
+        </batch:commit>
+      </batch:step>
+      <batch:step name="Batch_Step:UpdateIODetails" accept-expression="#[recordVars['detailExists']]">
+        <logger message="#[payload['ORIGINATING_ID']]" level="INFO" doc:name="logOriginatingID" />
+        <batch:commit doc:name="Batch Commit" size="1000">
+          <flow-ref name="updateIODetails" doc:name="updateIODetails" />
+        </batch:commit>
+      </batch:step>
+    </batch:process-records>
+    <batch:on-complete>
+      <logger message="Completed IO Details #[payload.processedRecords] in time #[payload.elapsedTimeInMillis] ms" level="INFO" doc:name="Logger" />
+    </batch:on-complete>
+  </batch:job>
+
+  <flow name="insertIODetails">
+    <db:insert config-ref="Oracle_Configuration" bulkMode="true" doc:name="DB:InsertIODetails">
+            <db:parameterized-query><![CDATA[INSERT INTO XXTWOE_ORDER_IMPRT_STG_PRODDET(
+        IO_DETAILS, OP_MODE, 
+        STATUS_FLAG, 
+        PLATFORM, PRODUCT, 
+        QUEUE_TYPE, 
+        TOTAL_NUMBER_OF_POSTS, 
+        ORDER_NUMBER, 
+        OPPTY_LINE_ITEM_ID, 
+        CREATION_DATE, 
+        CREATED_BY, 
+        LAST_UPDATE_DATE, 
+        LAST_UPDATED_BY, 
+        ORIGINATING_ID) 
+        VALUES (
+        #[payload.details['IO_DETAILS']], 
+        #[payload.details['OP_MODE']], 
+        #[payload.details['STATUS_FLAG']], 
+        #[payload.details['PLATFORM']], 
+        #[payload.details['PRODUCT']], 
+        #[payload.details['QUEUE_TYPE']], 
+        #[payload.details['TOTAL_NUMBER_OF_POSTS']], 
+        #[payload.details['ORDER_NUMBER']], 
+        #[payload.details['OPPTY_LINE_ITEM_ID']], 
+        SYSDATE, 
+        1392, 
+        SYSDATE, 
+        1392, 
+        #[payload.details['ORIGINATING_ID']]
+        )]]></db:parameterized-query>
+    </db:insert>
+    <catch-exception-strategy doc:name="catch-exception-strategy">
+      <set-payload value="#[String.format(&quot;Error inserting IO Details with failure message: %s\n\nFailed Record:\n%s&quot;, exception.message.substring(0, exception.message.indexOf(&quot; Message&quot;)), payload)]" doc:name="Set Error Payload" />
+      <flow-ref name="send_error_email" doc:name="send_error_email" />
+    </catch-exception-strategy>
+  </flow>
+
+  <flow name="updateIODetails">
+    <db:update config-ref="Oracle_Configuration" bulkMode="true" doc:name="DB:UpdateIODetails">
+            <db:parameterized-query><![CDATA[UPDATE XXTWOE_ORDER_IMPRT_STG_PRODDET SET
+        IO_DETAILS = #[payload['IO_DETAILS']], 
+        OP_MODE = #[payload['OP_MODE']],
+        STATUS_FLAG = #[payload['STATUS_FLAG']],
+        PLATFORM = #[payload['PLATFORM']], 
+        PRODUCT = #[payload['PRODUCT']],
+        QUEUE_TYPE = #[payload['QUEUE_TYPE']],
+        TOTAL_NUMBER_OF_POSTS = #[payload['TOTAL_NUMBER_OF_POSTS']], 
+        ORDER_NUMBER = #[payload['ORDER_NUMBER']], 
+        OPPTY_LINE_ITEM_ID = #[payload['OPPTY_LINE_ITEM_ID']], 
+        LAST_UPDATE_DATE = SYSDATE,
+        LAST_UPDATED_BY = 1392 
+        WHERE
+        ORIGINATING_ID = #[payload['ORIGINATING_ID']]]]></db:parameterized-query>
+    </db:update>
+    <catch-exception-strategy doc:name="catch-exception-strategy">
+      <set-payload value="#[String.format(&quot;Error updating IO Details with failure message: %s\n\nFailed Record:\n%s&quot;, exception.message.substring(0, exception.message.indexOf(&quot; Message&quot;)), payload)]" doc:name="Set Error Payload" />
+      <flow-ref name="send_error_email" doc:name="send_error_email" />
+    </catch-exception-strategy>
+  </flow>
+
+</mule>
